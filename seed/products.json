@@ -1,0 +1,22 @@
+[
+  {
+    "sku": "ABC-01",
+    "nombre": "Teclado Mecánico Compacto",
+    "disponible": 100
+  },
+  {
+    "sku": "ABC-02",
+    "nombre": "Mouse Inalámbrico Ergonómico",
+    "disponible": 50
+  },
+  {
+    "sku": "XYZ-10",
+    "nombre": "Monitor 27 Pulgadas QHD",
+    "disponible": 5
+  },
+  {
+    "sku": "XYZ-20",
+    "nombre": "Webcam 4K USB-C",
+    "disponible": 0
+  }
+]
