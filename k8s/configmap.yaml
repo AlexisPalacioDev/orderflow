@@ -9,6 +9,7 @@ data:
   RABBITMQ_HOST: "rabbitmq"
   RABBITMQ_PORT: "5672"
   OUTBOX_POLL_MS: "1000"
+  # Fixed when .retry queues are first declared; changing it requires deleting the empty .retry queues (both services must match).
   RETRY_DELAY_MS: "5000"
   MAX_DELIVERY_ATTEMPTS: "5"
   RUN_MIGRATIONS: "false"

@@ -1,3 +1,5 @@
+# Job templates are immutable in Kubernetes: change metadata.name (e.g., append
+# the release version) or delete the previous Job before applying a new release.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -7,6 +9,7 @@ metadata:
     app.kubernetes.io/part-of: orderflow
 spec:
   backoffLimit: 3
+  ttlSecondsAfterFinished: 600
   template:
     metadata:
       labels:

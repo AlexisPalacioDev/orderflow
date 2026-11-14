@@ -8,7 +8,10 @@
 # exponential backoff; any fatal unhandled startup/host exception terminates the
 # dotnet process (PID 1) so kubelet restarts the pod automatically.
 #
-# Scaling replicas > 1 is safe for two reasons:
+# Note: inventory-worker always runs EF Core migrations at startup (it ignores
+# RUN_MIGRATIONS), so replicas MUST remain at 1 until its migrations are moved
+# to a dedicated migration Job. Consuming messages with multiple replicas is safe
+# for two reasons (only concurrent startup migrations are unsafe):
 # 1. Idempotency via processed_events (PK on event_id): duplicate deliveries or
 #    concurrent retries for the same OrderCreated event fail the unique insert
 #    inside the transaction and are acknowledged without re-discounting stock.
