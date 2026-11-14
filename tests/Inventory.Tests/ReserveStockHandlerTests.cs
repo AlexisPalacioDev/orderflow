@@ -57,6 +57,34 @@ public sealed class ReserveStockHandlerTests
     }
 
     [Fact]
+    public async Task TwoHandlerInstancesOnSameDatabase_DiscountOnceForDuplicateEvent()
+    {
+        var (connection, firstDb) = CreateDatabase();
+        using var _ = connection;
+        using var __ = firstDb;
+
+        var secondOptions = new DbContextOptionsBuilder<InventoryDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        using var secondDb = new InventoryDbContext(secondOptions);
+
+        var firstHandler = new ReserveStockHandler(firstDb, NullLogger<ReserveStockHandler>.Instance);
+        var secondHandler = new ReserveStockHandler(secondDb, NullLogger<ReserveStockHandler>.Instance);
+        var evt = new OrderCreated(Guid.NewGuid(), Guid.NewGuid(), "ABC-01", 3, DateTimeOffset.UtcNow);
+
+        var first = await firstHandler.HandleAsync(evt);
+        var second = await secondHandler.HandleAsync(evt);
+
+        Assert.Equal(ReserveStockOutcome.Reserved, first);
+        Assert.Equal(ReserveStockOutcome.AlreadyProcessed, second);
+
+        var item = await secondDb.Stock.AsNoTracking().SingleAsync(s => s.Sku == "ABC-01");
+        Assert.Equal(7, item.Disponible);
+        Assert.Equal(1, await secondDb.OutboxMessages.AsNoTracking().CountAsync());
+        Assert.Equal(1, await secondDb.ProcessedEvents.AsNoTracking().CountAsync());
+    }
+
+    [Fact]
     public async Task InsufficientStock_LeavesStockUnchangedAndEmitsRejected()
     {
         var (connection, db) = CreateDatabase();

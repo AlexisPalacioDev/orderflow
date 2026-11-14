@@ -19,11 +19,11 @@ public static class OrderEndpoints
         app.MapGet("/products", HandleListProductsAsync);
     }
 
-    private static async Task<IResult> HandleCreateOrderAsync(
+    public static async Task<IResult> HandleCreateOrderAsync(
         CreateOrderRequest request,
         OrdersDbContext db,
         ILoggerFactory loggerFactory,
-        CancellationToken ct)
+        CancellationToken ct = default)
     {
         var trimmedSku = request.Sku?.Trim() ?? string.Empty;
         var skuExists = !string.IsNullOrEmpty(trimmedSku)

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -32,21 +33,54 @@ public sealed class OrderFlowTests
     }
 
     [Theory]
-    [InlineData("", "ABC-01", 1, true, false)]
-    [InlineData("Ana", "UNKNOWN", 1, false, false)]
-    [InlineData("Ana", "ABC-01", 0, true, false)]
-    [InlineData("Ana", "ABC-01", 101, true, false)]
-    [InlineData("Ana", "ABC-01", 5, true, true)]
-    public void OrderValidator_ValidatesFieldsAsExpected(
+    [InlineData("", "ABC-01", 1, true, "clienteNombre")]
+    [InlineData("Ana", "UNKNOWN", 1, false, "sku")]
+    [InlineData("Ana", "ABC-01", 0, true, "cantidad")]
+    public void OrderValidator_InvalidInput_ReportsExpectedFieldKey(
         string clienteNombre,
         string sku,
         int cantidad,
         bool skuExists,
-        bool expectedValid)
+        string expectedFieldKey)
     {
         var errors = OrderValidator.Validate(clienteNombre, sku, cantidad, skuExists);
 
-        Assert.Equal(expectedValid, errors.Count == 0);
+        Assert.True(errors.ContainsKey(expectedFieldKey));
+        Assert.Single(errors);
+    }
+
+    [Fact]
+    public async Task CreateOrderEndpoint_RejectsUnknownSkuAndAcceptsSeededSku()
+    {
+        var (connection, db) = CreateDatabase();
+        using var _ = connection;
+        using var __ = db;
+
+        var invalidResult = await OrderEndpoints.HandleCreateOrderAsync(
+            new CreateOrderRequest("Ana", "NO-SUCH-SKU", 2),
+            db,
+            NullLoggerFactory.Instance);
+
+        var badRequest = Assert.IsAssignableFrom<IStatusCodeHttpResult>(invalidResult);
+        Assert.Equal(StatusCodes.Status400BadRequest, badRequest.StatusCode);
+
+        var validationValue = Assert.IsAssignableFrom<IValueHttpResult>(invalidResult).Value;
+        var problem = Assert.IsType<HttpValidationProblemDetails>(validationValue);
+        Assert.True(problem.Errors.ContainsKey("sku"));
+        Assert.Equal(0, await db.Orders.CountAsync());
+
+        var validResult = await OrderEndpoints.HandleCreateOrderAsync(
+            new CreateOrderRequest("Ana", "ABC-01", 2),
+            db,
+            NullLoggerFactory.Instance);
+
+        var created = Assert.IsAssignableFrom<IStatusCodeHttpResult>(validResult);
+        Assert.Equal(StatusCodes.Status201Created, created.StatusCode);
+
+        var createdOrder = Assert.IsType<Order>(Assert.IsAssignableFrom<IValueHttpResult>(validResult).Value);
+        Assert.Equal(OrderStatus.Pending, createdOrder.Estado);
+        Assert.Equal(1, await db.Orders.CountAsync());
+        Assert.Equal(1, await db.OutboxMessages.CountAsync());
     }
 
     [Fact]
@@ -84,7 +118,7 @@ public sealed class OrderFlowTests
     }
 
     [Fact]
-    public async Task CreateOrder_PersistsOrderAndOutboxInSingleTransaction()
+    public async Task CreateOrderWithOutbox_PersistsPendingOrderAndOutboxMessage()
     {
         var (connection, db) = CreateDatabase();
         using var _ = connection;
@@ -107,5 +141,26 @@ public sealed class OrderFlowTests
         Assert.Equal(order.Id, evt.OrderId);
         Assert.Equal("ABC-01", evt.Sku);
         Assert.Equal(4, evt.Cantidad);
+    }
+
+    [Fact]
+    public async Task CreateOrderWithOutbox_WhenOutboxInsertFails_RollsBackOrder()
+    {
+        var (connection, db) = CreateDatabase();
+        using var _ = connection;
+        using var __ = db;
+
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE TRIGGER fail_outbox_insert BEFORE INSERT ON outbox_messages BEGIN SELECT RAISE(ABORT, 'simulated outbox failure'); END;");
+
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            OrderEndpoints.CreateOrderWithOutboxAsync(
+                db,
+                new CreateOrderRequest("Carlos", "ABC-01", 4),
+                NullLogger.Instance));
+
+        db.ChangeTracker.Clear();
+        Assert.Equal(0, await db.Orders.AsNoTracking().CountAsync());
+        Assert.Equal(0, await db.OutboxMessages.AsNoTracking().CountAsync());
     }
 }
