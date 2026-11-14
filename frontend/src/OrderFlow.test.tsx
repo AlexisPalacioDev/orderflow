@@ -1,8 +1,9 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, renderHook, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OrderForm } from './components/OrderForm';
 import { OrderList } from './components/OrderList';
+import { useOrders } from './hooks/useOrders';
 import type { Order, Product } from './types';
 
 const SAMPLE_PRODUCTS: Product[] = [
@@ -128,5 +129,47 @@ describe('OrderForm and OrderList', () => {
     expect(confirmedBadge).toHaveClass('badge--confirmed');
     expect(rejectedBadge).toHaveClass('badge--rejected');
     expect(screen.getByText('Stock insuficiente')).toBeInTheDocument();
+  });
+
+  it('queues one refresh when refresh is called while a poll is in flight and aborts on unmount', async () => {
+    let resolveFirst!: (value: Response) => void;
+    let firstSignal: AbortSignal | undefined;
+    let secondSignal: AbortSignal | undefined;
+
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementationOnce((_input, init) => {
+        firstSignal = init?.signal ?? undefined;
+        return new Promise<Response>((resolve) => {
+          resolveFirst = resolve;
+        });
+      })
+      .mockImplementationOnce((_input, init) => {
+        secondSignal = init?.signal ?? undefined;
+        return new Promise<Response>(() => {});
+      });
+
+    const { result, unmount } = renderHook(() => useOrders());
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+    expect(firstSignal?.aborted).toBe(false);
+
+    // Calling refresh while initial poll is in flight must queue a follow-up fetch
+    void result.current.refresh();
+
+    await act(async () => {
+      resolveFirst(
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+    });
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
+    expect(secondSignal?.aborted).toBe(false);
+
+    unmount();
+    expect(secondSignal?.aborted).toBe(true);
   });
 });

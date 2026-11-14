@@ -1,13 +1,12 @@
 import { useState, type FormEvent } from 'react';
 import { ApiError, createOrder } from '../api/ordersApi';
-import type { CreateOrderRequest, FieldErrors, Order, Product } from '../types';
+import type { FieldErrors, Product } from '../types';
 
 interface OrderFormProps {
   products: Product[];
   productsLoading?: boolean;
   productsError?: string | null;
   onOrderCreated: () => Promise<void> | void;
-  submitOrder?: (payload: CreateOrderRequest) => Promise<Order>;
 }
 
 function validateOrderInput(clienteNombre: string, sku: string, cantidadRaw: string): FieldErrors {
@@ -37,7 +36,6 @@ export function OrderForm({
   productsLoading = false,
   productsError = null,
   onOrderCreated,
-  submitOrder = createOrder,
 }: OrderFormProps) {
   const [clienteNombre, setClienteNombre] = useState('');
   const [sku, setSku] = useState('');
@@ -62,7 +60,7 @@ export function OrderForm({
     setSubmitting(true);
 
     try {
-      const created = await submitOrder({
+      const created = await createOrder({
         clienteNombre: clienteNombre.trim(),
         sku: sku.trim(),
         cantidad: Number(cantidad),
