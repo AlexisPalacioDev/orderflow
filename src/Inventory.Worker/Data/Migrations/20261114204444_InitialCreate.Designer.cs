@@ -25,7 +25,7 @@ namespace Inventory.Worker.Data.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
-            modelBuilder.Entity("Inventory.Worker.Data.OutboxMessage", b =>
+            modelBuilder.Entity("OrderFlow.Messaging.OutboxMessage", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()

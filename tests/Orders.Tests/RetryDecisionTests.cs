@@ -1,4 +1,4 @@
-using Orders.Api.Messaging;
+using OrderFlow.Messaging;
 using Xunit;
 
 namespace Orders.Tests;

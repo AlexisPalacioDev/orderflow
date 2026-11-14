@@ -1,9 +1,10 @@
 using Inventory.Worker.Domain;
 using Microsoft.EntityFrameworkCore;
+using OrderFlow.Messaging;
 
 namespace Inventory.Worker.Data;
 
-public class InventoryDbContext(DbContextOptions<InventoryDbContext> options) : DbContext(options)
+public class InventoryDbContext(DbContextOptions<InventoryDbContext> options) : DbContext(options), IOutboxDbContext
 {
     public DbSet<StockItem> Stock => Set<StockItem>();
     public DbSet<ProcessedEvent> ProcessedEvents => Set<ProcessedEvent>();

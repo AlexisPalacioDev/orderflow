@@ -22,7 +22,7 @@ namespace Orders.Api.Data.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
-            modelBuilder.Entity("Orders.Api.Data.OutboxMessage", b =>
+            modelBuilder.Entity("OrderFlow.Messaging.OutboxMessage", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Inventory.Worker.Application;
 using Inventory.Worker.Data;
 using Inventory.Worker.Domain;
 using Microsoft.Data.Sqlite;

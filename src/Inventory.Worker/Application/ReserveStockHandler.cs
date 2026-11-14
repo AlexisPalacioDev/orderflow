@@ -1,10 +1,12 @@
 using System.Text.Json;
 using Inventory.Worker.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 using OrderFlow.Contracts;
+using OrderFlow.Messaging;
 
-namespace Inventory.Worker.Domain;
+namespace Inventory.Worker.Application;
 
 public enum ReserveStockOutcome
 {
@@ -126,15 +128,6 @@ public sealed class ReserveStockHandler(InventoryDbContext db, ILogger<ReserveSt
         return outcome;
     }
 
-    private static bool IsDuplicateKeyException(DbUpdateException ex)
-    {
-        if (ex.InnerException is PostgresException pgEx && pgEx.SqlState == PostgresErrorCodes.UniqueViolation)
-        {
-            return true;
-        }
-
-        var message = ex.InnerException?.Message ?? ex.Message;
-        return message.Contains("UNIQUE constraint failed", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("duplicate key", StringComparison.OrdinalIgnoreCase);
-    }
+    private static bool IsDuplicateKeyException(DbUpdateException ex) =>
+        ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation };
 }

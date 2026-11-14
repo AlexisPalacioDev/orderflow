@@ -2,10 +2,12 @@ FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
 COPY src/OrderFlow.Contracts/OrderFlow.Contracts.csproj src/OrderFlow.Contracts/
+COPY src/OrderFlow.Messaging/OrderFlow.Messaging.csproj src/OrderFlow.Messaging/
 COPY src/Orders.Api/Orders.Api.csproj src/Orders.Api/
 RUN dotnet restore src/Orders.Api/Orders.Api.csproj
 
 COPY src/OrderFlow.Contracts/ src/OrderFlow.Contracts/
+COPY src/OrderFlow.Messaging/ src/OrderFlow.Messaging/
 COPY src/Orders.Api/ src/Orders.Api/
 RUN dotnet publish src/Orders.Api/Orders.Api.csproj -c Release -o /app/publish --no-restore
 

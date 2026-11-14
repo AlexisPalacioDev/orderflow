@@ -1,9 +1,10 @@
 using Microsoft.EntityFrameworkCore;
+using OrderFlow.Messaging;
 using Orders.Api.Domain;
 
 namespace Orders.Api.Data;
 
-public class OrdersDbContext(DbContextOptions<OrdersDbContext> options) : DbContext(options)
+public class OrdersDbContext(DbContextOptions<OrdersDbContext> options) : DbContext(options), IOutboxDbContext
 {
     public DbSet<Order> Orders => Set<Order>();
     public DbSet<Product> Products => Set<Product>();

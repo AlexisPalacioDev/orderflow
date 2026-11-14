@@ -1,4 +1,4 @@
-namespace Orders.Api.Data;
+namespace OrderFlow.Messaging;
 
 public class OutboxMessage
 {

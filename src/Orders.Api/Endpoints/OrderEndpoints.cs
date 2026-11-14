@@ -1,10 +1,13 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using OrderFlow.Contracts;
+using OrderFlow.Messaging;
 using Orders.Api.Data;
 using Orders.Api.Domain;
 
 namespace Orders.Api.Endpoints;
+
+public record CreateOrderRequest(string? ClienteNombre, string? Sku, int Cantidad);
 
 public static class OrderEndpoints
 {
@@ -28,7 +31,7 @@ public static class OrderEndpoints
         var skuExists = !string.IsNullOrEmpty(trimmedSku)
             && await db.Products.AnyAsync(p => p.Sku == trimmedSku, ct);
 
-        var errors = OrderValidator.Validate(request, skuExists);
+        var errors = OrderValidator.Validate(request.ClienteNombre, request.Sku, request.Cantidad, skuExists);
         if (errors.Count > 0)
         {
             return Results.ValidationProblem(errors);

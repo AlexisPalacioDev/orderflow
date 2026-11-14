@@ -1,10 +1,13 @@
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using OrderFlow.Contracts;
-using Orders.Api.Data;
 using RabbitMQ.Client;
 
-namespace Orders.Api.Messaging;
+namespace OrderFlow.Messaging;
 
 public sealed class OutboxPublisher(
     IServiceScopeFactory scopeFactory,
@@ -61,7 +64,7 @@ public sealed class OutboxPublisher(
     private async Task<int> PublishPendingBatchAsync(CancellationToken ct)
     {
         using var scope = scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<OrdersDbContext>();
+        var db = scope.ServiceProvider.GetRequiredService<IOutboxDbContext>();
 
         var pending = await db.OutboxMessages
             .Where(m => m.PublishedAt == null)

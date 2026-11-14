@@ -1,14 +1,12 @@
 namespace Orders.Api.Domain;
 
-public record CreateOrderRequest(string? ClienteNombre, string? Sku, int Cantidad);
-
 public static class OrderValidator
 {
-    public static Dictionary<string, string[]> Validate(CreateOrderRequest request, bool skuExists)
+    public static Dictionary<string, string[]> Validate(string? clienteNombre, string? sku, int cantidad, bool skuExists)
     {
         var errors = new Dictionary<string, string[]>();
 
-        var nombre = request.ClienteNombre?.Trim();
+        var nombre = clienteNombre?.Trim();
         if (string.IsNullOrEmpty(nombre))
         {
             errors["clienteNombre"] = ["El nombre del cliente es obligatorio."];
@@ -18,17 +16,17 @@ public static class OrderValidator
             errors["clienteNombre"] = ["El nombre del cliente no puede superar los 120 caracteres."];
         }
 
-        var sku = request.Sku?.Trim();
-        if (string.IsNullOrEmpty(sku))
+        var trimmedSku = sku?.Trim();
+        if (string.IsNullOrEmpty(trimmedSku))
         {
             errors["sku"] = ["El SKU es obligatorio."];
         }
         else if (!skuExists)
         {
-            errors["sku"] = [$"El SKU '{sku}' no existe en el catálogo."];
+            errors["sku"] = [$"El SKU '{trimmedSku}' no existe en el catálogo."];
         }
 
-        if (request.Cantidad < 1 || request.Cantidad > 100)
+        if (cantidad < 1 || cantidad > 100)
         {
             errors["cantidad"] = ["La cantidad debe estar entre 1 y 100."];
         }

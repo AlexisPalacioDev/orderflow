@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace Inventory.Worker.Messaging;
+namespace OrderFlow.Messaging;
 
 public enum RetryAction
 {

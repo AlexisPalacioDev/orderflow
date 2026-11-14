@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using OrderFlow.Contracts;
+using OrderFlow.Messaging;
 using Orders.Api.Data;
 using Orders.Api.Domain;
 using RabbitMQ.Client;
@@ -154,7 +155,7 @@ public sealed class StockResultConsumer(
 
             try
             {
-                PublishToRetry(retryChannel, ea, routingKey, nextAttempt);
+                BrokerConnection.PublishToRetry(retryChannel, ea, routingKey, nextAttempt);
                 channel.BasicAck(ea.DeliveryTag, multiple: false);
             }
             catch (Exception retryEx)
@@ -166,49 +167,6 @@ public sealed class StockResultConsumer(
                     parsed.EventId);
             }
         }
-    }
-
-    private static void PublishToRetry(
-        IModel retryChannel,
-        BasicDeliverEventArgs ea,
-        string routingKey,
-        int nextAttempt)
-    {
-        var props = retryChannel.CreateBasicProperties();
-        props.Persistent = true;
-        props.ContentType = string.IsNullOrWhiteSpace(ea.BasicProperties?.ContentType)
-            ? "application/json"
-            : ea.BasicProperties.ContentType;
-
-        if (!string.IsNullOrWhiteSpace(ea.BasicProperties?.MessageId))
-        {
-            props.MessageId = ea.BasicProperties.MessageId;
-        }
-
-        if (!string.IsNullOrWhiteSpace(ea.BasicProperties?.Type))
-        {
-            props.Type = ea.BasicProperties.Type;
-        }
-
-        if (!string.IsNullOrWhiteSpace(ea.BasicProperties?.CorrelationId))
-        {
-            props.CorrelationId = ea.BasicProperties.CorrelationId;
-        }
-
-        var headers = ea.BasicProperties?.Headers is not null
-            ? new Dictionary<string, object>(ea.BasicProperties.Headers)
-            : new Dictionary<string, object>();
-        headers[MessagingConstants.AttemptHeader] = nextAttempt;
-        props.Headers = headers;
-
-        retryChannel.BasicPublish(
-            exchange: MessagingConstants.RetryExchange,
-            routingKey: routingKey,
-            mandatory: false,
-            basicProperties: props,
-            body: ea.Body);
-
-        retryChannel.WaitForConfirmsOrDie(TimeSpan.FromSeconds(5));
     }
 
     public static async Task<bool> ApplyResultAsync(

@@ -1,7 +1,8 @@
+using Inventory.Worker.Application;
 using Inventory.Worker.Data;
-using Inventory.Worker.Domain;
 using Inventory.Worker.Messaging;
 using Microsoft.EntityFrameworkCore;
+using OrderFlow.Messaging;
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -10,6 +11,7 @@ var connectionString = builder.Configuration.GetConnectionString("InventoryDb")
     ?? throw new InvalidOperationException("ConnectionStrings:InventoryDb or INVENTORY_DB_CONNECTION is required.");
 
 builder.Services.AddDbContext<InventoryDbContext>(options => options.UseNpgsql(connectionString));
+builder.Services.AddScoped<IOutboxDbContext>(sp => sp.GetRequiredService<InventoryDbContext>());
 builder.Services.AddScoped<ReserveStockHandler>();
 builder.Services.AddSingleton<BrokerConnection>();
 builder.Services.AddHostedService<OrderCreatedConsumer>();

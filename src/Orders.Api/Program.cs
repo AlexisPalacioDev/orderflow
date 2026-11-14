@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
+using OrderFlow.Messaging;
 using Orders.Api.Data;
 using Orders.Api.Endpoints;
 using Orders.Api.Messaging;
@@ -16,6 +17,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 });
 
 builder.Services.AddDbContext<OrdersDbContext>(options => options.UseNpgsql(connectionString));
+builder.Services.AddScoped<IOutboxDbContext>(sp => sp.GetRequiredService<OrdersDbContext>());
 builder.Services.AddSingleton<BrokerConnection>();
 builder.Services.AddHostedService<OutboxPublisher>();
 builder.Services.AddHostedService<StockResultConsumer>();

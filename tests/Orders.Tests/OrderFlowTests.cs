@@ -44,7 +44,7 @@ public sealed class OrderFlowTests
         bool skuExists,
         bool expectedValid)
     {
-        var errors = OrderValidator.Validate(new CreateOrderRequest(clienteNombre, sku, cantidad), skuExists);
+        var errors = OrderValidator.Validate(clienteNombre, sku, cantidad, skuExists);
 
         Assert.Equal(expectedValid, errors.Count == 0);
     }

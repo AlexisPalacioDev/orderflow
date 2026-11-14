@@ -1,7 +1,9 @@
+using Microsoft.Extensions.Configuration;
 using OrderFlow.Contracts;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
 
-namespace Inventory.Worker.Messaging;
+namespace OrderFlow.Messaging;
 
 public sealed class BrokerConnection
 {
@@ -138,5 +140,48 @@ public sealed class BrokerConnection
                 exchange: MessagingConstants.RetryExchange,
                 routingKey: key);
         }
+    }
+
+    public static void PublishToRetry(
+        IModel retryChannel,
+        BasicDeliverEventArgs ea,
+        string routingKey,
+        int nextAttempt)
+    {
+        var props = retryChannel.CreateBasicProperties();
+        props.Persistent = true;
+        props.ContentType = string.IsNullOrWhiteSpace(ea.BasicProperties?.ContentType)
+            ? "application/json"
+            : ea.BasicProperties.ContentType;
+
+        if (!string.IsNullOrWhiteSpace(ea.BasicProperties?.MessageId))
+        {
+            props.MessageId = ea.BasicProperties.MessageId;
+        }
+
+        if (!string.IsNullOrWhiteSpace(ea.BasicProperties?.Type))
+        {
+            props.Type = ea.BasicProperties.Type;
+        }
+
+        if (!string.IsNullOrWhiteSpace(ea.BasicProperties?.CorrelationId))
+        {
+            props.CorrelationId = ea.BasicProperties.CorrelationId;
+        }
+
+        var headers = ea.BasicProperties?.Headers is not null
+            ? new Dictionary<string, object>(ea.BasicProperties.Headers)
+            : new Dictionary<string, object>();
+        headers[MessagingConstants.AttemptHeader] = nextAttempt;
+        props.Headers = headers;
+
+        retryChannel.BasicPublish(
+            exchange: MessagingConstants.RetryExchange,
+            routingKey: routingKey,
+            mandatory: false,
+            basicProperties: props,
+            body: ea.Body);
+
+        retryChannel.WaitForConfirmsOrDie(TimeSpan.FromSeconds(5));
     }
 }

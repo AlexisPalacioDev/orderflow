@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\OrderFlow.Contracts\OrderFlow.Contracts.csproj" />
+    <ProjectReference Include="..\OrderFlow.Messaging\OrderFlow.Messaging.csproj" />
   </ItemGroup>
 
   <ItemGroup>
