@@ -1,0 +1,94 @@
+# No Kubernetes Service is needed because inventory-worker has no inbound HTTP
+# endpoints; it only pulls messages from RabbitMQ and writes to PostgreSQL.
+#
+# Scaling replicas > 1 is safe for two reasons:
+# 1. Idempotency via processed_events (PK on event_id): duplicate deliveries or
+#    concurrent retries for the same OrderCreated event fail the unique insert
+#    inside the transaction and are acknowledged without re-discounting stock.
+# 2. Atomic conditional stock update: the worker executes
+#    `UPDATE stock SET disponible = disponible - @qty WHERE sku = @sku AND disponible >= @qty`
+#    within the same database transaction as outbox creation, so concurrent workers
+#    competing for the last units of the same SKU are serialized by PostgreSQL row
+#    locks and cannot oversell.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory-worker
+  labels:
+    app: inventory-worker
+    app.kubernetes.io/part-of: orderflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: inventory-worker
+  template:
+    metadata:
+      labels:
+        app: inventory-worker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1654
+        runAsGroup: 1654
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: inventory-worker
+          image: ghcr.io/example/orderflow-inventory-worker:1.0.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: RABBITMQ_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: orderflow-config
+                  key: RABBITMQ_HOST
+            - name: RABBITMQ_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: orderflow-config
+                  key: RABBITMQ_PORT
+            - name: OUTBOX_POLL_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: orderflow-config
+                  key: OUTBOX_POLL_MS
+            - name: SEED_PATH
+              valueFrom:
+                configMapKeyRef:
+                  name: orderflow-config
+                  key: SEED_PATH
+            - name: ConnectionStrings__InventoryDb
+              valueFrom:
+                secretKeyRef:
+                  name: orderflow-secrets
+                  key: ConnectionStrings__InventoryDb
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: orderflow-secrets
+                  key: RABBITMQ_USER
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: orderflow-secrets
+                  key: RABBITMQ_PASSWORD
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
