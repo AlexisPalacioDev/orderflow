@@ -11,3 +11,5 @@ out/
 *.sqlite
 TestResults/
 coverage/
+node_modules/
+frontend/dist/

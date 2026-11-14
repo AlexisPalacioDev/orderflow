@@ -6,6 +6,8 @@
 **/obj
 **/out
 **/TestResults
+**/node_modules
+frontend/dist
 .env
 README.md
 scripts/
