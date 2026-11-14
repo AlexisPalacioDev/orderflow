@@ -57,7 +57,7 @@ public sealed class ReserveStockHandlerTests
     }
 
     [Fact]
-    public async Task TwoHandlerInstancesOnSameDatabase_DiscountOnceForDuplicateEvent()
+    public async Task SameEventHandledByTwoHandlerInstancesSequentially_DiscountsStockOnce()
     {
         var (connection, firstDb) = CreateDatabase();
         using var _ = connection;
