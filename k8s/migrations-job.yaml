@@ -1,0 +1,56 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: orders-db-migrate
+  labels:
+    app: orders-db-migrate
+    app.kubernetes.io/part-of: orderflow
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: orders-db-migrate
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1654
+        runAsGroup: 1654
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: orders-migrate
+          image: ghcr.io/example/orderflow-orders-api:1.0.0
+          imagePullPolicy: IfNotPresent
+          args: ["--migrate"]
+          env:
+            - name: SEED_PATH
+              valueFrom:
+                configMapKeyRef:
+                  name: orderflow-config
+                  key: SEED_PATH
+            - name: ConnectionStrings__OrdersDb
+              valueFrom:
+                secretKeyRef:
+                  name: orderflow-secrets
+                  key: ConnectionStrings__OrdersDb
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

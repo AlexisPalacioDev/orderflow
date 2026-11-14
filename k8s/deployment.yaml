@@ -50,6 +50,21 @@ spec:
                 configMapKeyRef:
                   name: orderflow-config
                   key: OUTBOX_POLL_MS
+            - name: RETRY_DELAY_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: orderflow-config
+                  key: RETRY_DELAY_MS
+            - name: MAX_DELIVERY_ATTEMPTS
+              valueFrom:
+                configMapKeyRef:
+                  name: orderflow-config
+                  key: MAX_DELIVERY_ATTEMPTS
+            - name: RUN_MIGRATIONS
+              valueFrom:
+                configMapKeyRef:
+                  name: orderflow-config
+                  key: RUN_MIGRATIONS
             - name: SEED_PATH
               valueFrom:
                 configMapKeyRef:

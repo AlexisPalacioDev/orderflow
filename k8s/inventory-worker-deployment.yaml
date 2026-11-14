@@ -1,6 +1,13 @@
 # No Kubernetes Service is needed because inventory-worker has no inbound HTTP
 # endpoints; it only pulls messages from RabbitMQ and writes to PostgreSQL.
 #
+# No livenessProbe is configured because the worker has no HTTP server, and the
+# container runs as a minimal .NET runtime image without a trivial process probe
+# that distinguishes an idle consumer waiting on RabbitMQ from a wedged one.
+# Both OrderCreatedConsumer and OutboxPublisher reconnect indefinitely with
+# exponential backoff; any fatal unhandled startup/host exception terminates the
+# dotnet process (PID 1) so kubelet restarts the pod automatically.
+#
 # Scaling replicas > 1 is safe for two reasons:
 # 1. Idempotency via processed_events (PK on event_id): duplicate deliveries or
 #    concurrent retries for the same OrderCreated event fail the unique insert
@@ -53,6 +60,16 @@ spec:
                 configMapKeyRef:
                   name: orderflow-config
                   key: OUTBOX_POLL_MS
+            - name: RETRY_DELAY_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: orderflow-config
+                  key: RETRY_DELAY_MS
+            - name: MAX_DELIVERY_ATTEMPTS
+              valueFrom:
+                configMapKeyRef:
+                  name: orderflow-config
+                  key: MAX_DELIVERY_ATTEMPTS
             - name: SEED_PATH
               valueFrom:
                 configMapKeyRef:

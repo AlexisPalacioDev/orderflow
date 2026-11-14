@@ -72,7 +72,19 @@ app.UseExceptionHandler(exceptionApp =>
     });
 });
 
-await InitializeDatabaseAsync(app.Services, app.Configuration, app.Logger);
+var migrateOnly = args.Contains("--migrate", StringComparer.OrdinalIgnoreCase);
+var runMigrations = migrateOnly
+    || !string.Equals(app.Configuration["RUN_MIGRATIONS"], "false", StringComparison.OrdinalIgnoreCase);
+
+if (runMigrations)
+{
+    await InitializeDatabaseAsync(app.Services, app.Configuration, app.Logger);
+}
+
+if (migrateOnly)
+{
+    return;
+}
 
 app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
 app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = check => check.Tags.Contains("ready") });

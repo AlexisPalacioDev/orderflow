@@ -9,4 +9,7 @@ data:
   RABBITMQ_HOST: "rabbitmq"
   RABBITMQ_PORT: "5672"
   OUTBOX_POLL_MS: "1000"
+  RETRY_DELAY_MS: "5000"
+  MAX_DELIVERY_ATTEMPTS: "5"
+  RUN_MIGRATIONS: "false"
   SEED_PATH: "/app/seed/products.json"
