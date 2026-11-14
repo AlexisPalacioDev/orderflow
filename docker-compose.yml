@@ -67,7 +67,15 @@ services:
       rabbitmq:
         condition: service_healthy
 
-  # web: added in Contract B
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      orders-api:
+        condition: service_healthy
 
 volumes:
   postgres_data:
