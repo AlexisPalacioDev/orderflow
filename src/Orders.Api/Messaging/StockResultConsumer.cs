@@ -14,8 +14,8 @@ public sealed class StockResultConsumer(
     BrokerConnection broker,
     ILogger<StockResultConsumer> logger) : BackgroundService
 {
-    private const string RetryHeader = "x-retry-count";
-    private const string OriginalRoutingKeyHeader = "x-original-routing-key";
+    private sealed class PoisonMessageException(string message, Exception? inner = null)
+        : Exception(message, inner);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -25,22 +25,26 @@ public sealed class StockResultConsumer(
         {
             IConnection? connection = null;
             IModel? channel = null;
+            IModel? retryChannel = null;
 
             try
             {
                 connection = broker.CreateConnection();
                 channel = connection.CreateModel();
-                BrokerConnection.DeclareTopology(channel);
+                retryChannel = connection.CreateModel();
+                broker.DeclareTopology(channel);
+                retryChannel.ConfirmSelect();
                 channel.BasicQos(0, MessagingConstants.ConsumerPrefetch, global: false);
 
                 var closedTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 connection.ConnectionShutdown += (_, _) => closedTcs.TrySetResult();
                 channel.ModelShutdown += (_, _) => closedTcs.TrySetResult();
+                retryChannel.ModelShutdown += (_, _) => closedTcs.TrySetResult();
 
                 var consumer = new AsyncEventingBasicConsumer(channel);
                 consumer.Received += async (_, ea) =>
                 {
-                    await HandleDeliveryAsync(channel, ea, stoppingToken);
+                    await HandleDeliveryAsync(channel, retryChannel, ea, stoppingToken);
                 };
 
                 channel.BasicConsume(
@@ -64,6 +68,7 @@ public sealed class StockResultConsumer(
             }
             finally
             {
+                try { retryChannel?.Dispose(); } catch { /* ignore cleanup errors */ }
                 try { channel?.Dispose(); } catch { /* ignore cleanup errors */ }
                 try { connection?.Dispose(); } catch { /* ignore cleanup errors */ }
             }
@@ -84,55 +89,126 @@ public sealed class StockResultConsumer(
         }
     }
 
-    private async Task HandleDeliveryAsync(IModel channel, BasicDeliverEventArgs ea, CancellationToken ct)
+    private async Task HandleDeliveryAsync(
+        IModel channel,
+        IModel retryChannel,
+        BasicDeliverEventArgs ea,
+        CancellationToken ct)
     {
-        var routingKey = ResolveRoutingKey(ea);
+        var routingKey = ea.RoutingKey;
+        var messageType = ea.BasicProperties?.Type;
+        var messageId = ea.BasicProperties?.MessageId;
         var payload = Encoding.UTF8.GetString(ea.Body.ToArray());
+
+        ParsedStockResult parsed;
+        try
+        {
+            parsed = ParseEvent(routingKey, messageType, payload);
+        }
+        catch (PoisonMessageException ex)
+        {
+            logger.LogError(
+                ex,
+                "Poison stock result message (RoutingKey={RoutingKey}, Type={MessageType}, MessageId={MessageId}); sending directly to DLQ",
+                routingKey,
+                messageType,
+                messageId);
+            channel.BasicNack(ea.DeliveryTag, multiple: false, requeue: false);
+            return;
+        }
 
         try
         {
             using var scope = scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<OrdersDbContext>();
 
-            await ApplyResultAsync(db, routingKey, payload, logger, ct);
+            await ApplyParsedResultAsync(db, parsed, logger, ct);
             channel.BasicAck(ea.DeliveryTag, multiple: false);
         }
         catch (Exception ex)
         {
-            var attempts = GetAttemptCount(ea.BasicProperties);
-            if (attempts >= MessagingConstants.MaxDeliveryAttempts)
+            var attempt = RetryDecision.ReadAttempt(ea.BasicProperties?.Headers, MessagingConstants.AttemptHeader);
+            if (RetryDecision.For(attempt, broker.MaxDeliveryAttempts) == RetryAction.DeadLetter)
             {
                 logger.LogError(
                     ex,
-                    "Stock result message failed after {Attempts} attempts; sending to DLQ",
-                    attempts);
+                    "Stock result message for order {OrderId} (event {EventId}) failed after {Attempt}/{MaxAttempts} attempts; sending to DLQ",
+                    parsed.OrderId,
+                    parsed.EventId,
+                    attempt,
+                    broker.MaxDeliveryAttempts);
                 channel.BasicNack(ea.DeliveryTag, multiple: false, requeue: false);
+                return;
             }
-            else
+
+            var nextAttempt = attempt + 1;
+            logger.LogWarning(
+                ex,
+                "Stock result message for order {OrderId} (event {EventId}) failed on attempt {Attempt}/{MaxAttempts}; scheduling delayed retry ({DelayMs}ms, next x-attempt={NextAttempt})",
+                parsed.OrderId,
+                parsed.EventId,
+                attempt,
+                broker.MaxDeliveryAttempts,
+                broker.RetryDelayMs,
+                nextAttempt);
+
+            try
             {
-                logger.LogWarning(
-                    ex,
-                    "Stock result message failed on attempt {Attempts}; requeuing for retry",
-                    attempts);
-
-                var props = channel.CreateBasicProperties();
-                props.Persistent = true;
-                props.ContentType = "application/json";
-                props.Headers = new Dictionary<string, object>
-                {
-                    [RetryHeader] = attempts,
-                    [OriginalRoutingKeyHeader] = routingKey
-                };
-
-                channel.BasicPublish(
-                    exchange: string.Empty,
-                    routingKey: MessagingConstants.OrdersStockResultQueue,
-                    mandatory: false,
-                    basicProperties: props,
-                    body: ea.Body);
+                PublishToRetry(retryChannel, ea, routingKey, nextAttempt);
                 channel.BasicAck(ea.DeliveryTag, multiple: false);
             }
+            catch (Exception retryEx)
+            {
+                logger.LogWarning(
+                    retryEx,
+                    "Failed to publish retry for order {OrderId} (event {EventId}); leaving message unacknowledged for redelivery",
+                    parsed.OrderId,
+                    parsed.EventId);
+            }
         }
+    }
+
+    private static void PublishToRetry(
+        IModel retryChannel,
+        BasicDeliverEventArgs ea,
+        string routingKey,
+        int nextAttempt)
+    {
+        var props = retryChannel.CreateBasicProperties();
+        props.Persistent = true;
+        props.ContentType = string.IsNullOrWhiteSpace(ea.BasicProperties?.ContentType)
+            ? "application/json"
+            : ea.BasicProperties.ContentType;
+
+        if (!string.IsNullOrWhiteSpace(ea.BasicProperties?.MessageId))
+        {
+            props.MessageId = ea.BasicProperties.MessageId;
+        }
+
+        if (!string.IsNullOrWhiteSpace(ea.BasicProperties?.Type))
+        {
+            props.Type = ea.BasicProperties.Type;
+        }
+
+        if (!string.IsNullOrWhiteSpace(ea.BasicProperties?.CorrelationId))
+        {
+            props.CorrelationId = ea.BasicProperties.CorrelationId;
+        }
+
+        var headers = ea.BasicProperties?.Headers is not null
+            ? new Dictionary<string, object>(ea.BasicProperties.Headers)
+            : new Dictionary<string, object>();
+        headers[MessagingConstants.AttemptHeader] = nextAttempt;
+        props.Headers = headers;
+
+        retryChannel.BasicPublish(
+            exchange: MessagingConstants.RetryExchange,
+            routingKey: routingKey,
+            mandatory: false,
+            basicProperties: props,
+            body: ea.Body);
+
+        retryChannel.WaitForConfirmsOrDie(TimeSpan.FromSeconds(5));
     }
 
     public static async Task<bool> ApplyResultAsync(
@@ -142,13 +218,21 @@ public sealed class StockResultConsumer(
         ILogger logger,
         CancellationToken ct = default)
     {
+        var parsed = ParseEvent(routingKey, messageType: null, payload);
+        return await ApplyParsedResultAsync(db, parsed, logger, ct);
+    }
+
+    private static async Task<bool> ApplyParsedResultAsync(
+        OrdersDbContext db,
+        ParsedStockResult parsed,
+        ILogger logger,
+        CancellationToken ct)
+    {
         var now = DateTime.UtcNow;
 
-        if (routingKey == MessagingConstants.StockReservedRoutingKey)
+        if (parsed.Reserved is not null)
         {
-            var evt = JsonSerializer.Deserialize<StockReserved>(payload, EventSerialization.Options)
-                ?? throw new InvalidOperationException("Invalid StockReserved payload.");
-
+            var evt = parsed.Reserved;
             var updated = await db.Orders
                 .Where(o => o.Id == evt.OrderId && o.Estado == OrderStatus.Pending)
                 .ExecuteUpdateAsync(s => s
@@ -174,74 +258,95 @@ public sealed class StockResultConsumer(
             return updated == 1;
         }
 
+        var rejected = parsed.Rejected!;
+        var rejectedUpdated = await db.Orders
+            .Where(o => o.Id == rejected.OrderId && o.Estado == OrderStatus.Pending)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(o => o.Estado, OrderStatus.Rejected)
+                .SetProperty(o => o.MotivoRechazo, rejected.Motivo)
+                .SetProperty(o => o.ActualizadoEn, now), ct);
+
+        if (rejectedUpdated == 1)
+        {
+            logger.LogInformation(
+                "Order {OrderId} transitioned Pending -> Rejected ({Reason}) via event {EventId}",
+                rejected.OrderId,
+                rejected.Motivo,
+                rejected.EventId);
+        }
+        else
+        {
+            logger.LogInformation(
+                "Ignored StockRejected event {EventId} for order {OrderId}; order is not Pending",
+                rejected.EventId,
+                rejected.OrderId);
+        }
+
+        return rejectedUpdated == 1;
+    }
+
+    private static ParsedStockResult ParseEvent(string routingKey, string? messageType, string payload)
+    {
+        if (routingKey == MessagingConstants.StockReservedRoutingKey)
+        {
+            if (!string.IsNullOrWhiteSpace(messageType) && messageType != nameof(StockReserved))
+            {
+                throw new PoisonMessageException($"Unexpected message type '{messageType}' for routing key '{routingKey}'.");
+            }
+
+            StockReserved? evt;
+            try
+            {
+                evt = JsonSerializer.Deserialize<StockReserved>(payload, EventSerialization.Options);
+            }
+            catch (JsonException ex)
+            {
+                throw new PoisonMessageException("Malformed JSON for StockReserved.", ex);
+            }
+
+            if (evt is null || evt.EventId == Guid.Empty || evt.OrderId == Guid.Empty || string.IsNullOrWhiteSpace(evt.Sku))
+            {
+                throw new PoisonMessageException("Invalid StockReserved payload.");
+            }
+
+            return new ParsedStockResult(evt.OrderId, evt.EventId, evt, null);
+        }
+
         if (routingKey == MessagingConstants.StockRejectedRoutingKey)
         {
-            var evt = JsonSerializer.Deserialize<StockRejected>(payload, EventSerialization.Options)
-                ?? throw new InvalidOperationException("Invalid StockRejected payload.");
-
-            var updated = await db.Orders
-                .Where(o => o.Id == evt.OrderId && o.Estado == OrderStatus.Pending)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(o => o.Estado, OrderStatus.Rejected)
-                    .SetProperty(o => o.MotivoRechazo, evt.Motivo)
-                    .SetProperty(o => o.ActualizadoEn, now), ct);
-
-            if (updated == 1)
+            if (!string.IsNullOrWhiteSpace(messageType) && messageType != nameof(StockRejected))
             {
-                logger.LogInformation(
-                    "Order {OrderId} transitioned Pending -> Rejected ({Reason}) via event {EventId}",
-                    evt.OrderId,
-                    evt.Motivo,
-                    evt.EventId);
-            }
-            else
-            {
-                logger.LogInformation(
-                    "Ignored StockRejected event {EventId} for order {OrderId}; order is not Pending",
-                    evt.EventId,
-                    evt.OrderId);
+                throw new PoisonMessageException($"Unexpected message type '{messageType}' for routing key '{routingKey}'.");
             }
 
-            return updated == 1;
+            StockRejected? evt;
+            try
+            {
+                evt = JsonSerializer.Deserialize<StockRejected>(payload, EventSerialization.Options);
+            }
+            catch (JsonException ex)
+            {
+                throw new PoisonMessageException("Malformed JSON for StockRejected.", ex);
+            }
+
+            if (evt is null ||
+                evt.EventId == Guid.Empty ||
+                evt.OrderId == Guid.Empty ||
+                string.IsNullOrWhiteSpace(evt.Sku) ||
+                string.IsNullOrWhiteSpace(evt.Motivo))
+            {
+                throw new PoisonMessageException("Invalid StockRejected payload.");
+            }
+
+            return new ParsedStockResult(evt.OrderId, evt.EventId, null, evt);
         }
 
-        throw new InvalidOperationException($"Unsupported routing key '{routingKey}'.");
+        throw new PoisonMessageException($"Unsupported routing key '{routingKey}'.");
     }
 
-    private static int GetAttemptCount(IBasicProperties? properties)
-    {
-        if (properties?.Headers is null || !properties.Headers.TryGetValue(RetryHeader, out var raw))
-        {
-            return 1;
-        }
-
-        var previousRetries = raw switch
-        {
-            int i => i,
-            long l => (int)l,
-            byte[] bytes when int.TryParse(Encoding.UTF8.GetString(bytes), out var parsed) => parsed,
-            _ => 0
-        };
-
-        return previousRetries + 1;
-    }
-
-    private static string ResolveRoutingKey(BasicDeliverEventArgs ea)
-    {
-        if (ea.BasicProperties?.Headers is not null &&
-            ea.BasicProperties.Headers.TryGetValue(OriginalRoutingKeyHeader, out var raw))
-        {
-            if (raw is byte[] bytes)
-            {
-                return Encoding.UTF8.GetString(bytes);
-            }
-
-            if (raw is string text)
-            {
-                return text;
-            }
-        }
-
-        return ea.RoutingKey;
-    }
+    private sealed record ParsedStockResult(
+        Guid OrderId,
+        Guid EventId,
+        StockReserved? Reserved,
+        StockRejected? Rejected);
 }

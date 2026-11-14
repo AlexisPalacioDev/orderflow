@@ -7,6 +7,9 @@ public sealed class BrokerConnection
 {
     private readonly ConnectionFactory _factory;
 
+    public int RetryDelayMs { get; }
+    public int MaxDeliveryAttempts { get; }
+
     public BrokerConnection(IConfiguration configuration)
     {
         var host = configuration["RABBITMQ_HOST"] ?? configuration["RabbitMQ:Host"]
@@ -16,6 +19,14 @@ public sealed class BrokerConnection
             ?? throw new InvalidOperationException("RABBITMQ_USER environment variable is required.");
         var password = configuration["RABBITMQ_PASSWORD"] ?? configuration["RabbitMQ:Password"]
             ?? throw new InvalidOperationException("RABBITMQ_PASSWORD environment variable is required.");
+
+        RetryDelayMs = int.TryParse(configuration["RETRY_DELAY_MS"], out var delayMs) && delayMs > 0
+            ? delayMs
+            : MessagingConstants.DefaultRetryDelayMs;
+
+        MaxDeliveryAttempts = int.TryParse(configuration["MAX_DELIVERY_ATTEMPTS"], out var maxAttempts) && maxAttempts > 0
+            ? maxAttempts
+            : MessagingConstants.DefaultMaxDeliveryAttempts;
 
         _factory = new ConnectionFactory
         {
@@ -30,11 +41,19 @@ public sealed class BrokerConnection
 
     public IConnection CreateConnection() => _factory.CreateConnection();
 
-    public static void DeclareTopology(IModel channel)
+    public void DeclareTopology(IModel channel) => DeclareTopology(channel, RetryDelayMs);
+
+    public static void DeclareTopology(IModel channel, int retryDelayMs = MessagingConstants.DefaultRetryDelayMs)
     {
         channel.ExchangeDeclare(
             exchange: MessagingConstants.EventsExchange,
             type: ExchangeType.Topic,
+            durable: true,
+            autoDelete: false);
+
+        channel.ExchangeDeclare(
+            exchange: MessagingConstants.RetryExchange,
+            type: ExchangeType.Direct,
             durable: true,
             autoDelete: false);
 
@@ -44,24 +63,30 @@ public sealed class BrokerConnection
             durable: true,
             autoDelete: false);
 
-        DeclareQueueWithDlq(
+        DeclareQueueTopology(
             channel,
             MessagingConstants.InventoryOrderCreatedQueue,
+            MessagingConstants.InventoryOrderCreatedRetryQueue,
             MessagingConstants.InventoryOrderCreatedDlq,
-            [MessagingConstants.OrderCreatedRoutingKey]);
+            [MessagingConstants.OrderCreatedRoutingKey],
+            retryDelayMs);
 
-        DeclareQueueWithDlq(
+        DeclareQueueTopology(
             channel,
             MessagingConstants.OrdersStockResultQueue,
+            MessagingConstants.OrdersStockResultRetryQueue,
             MessagingConstants.OrdersStockResultDlq,
-            [MessagingConstants.StockReservedRoutingKey, MessagingConstants.StockRejectedRoutingKey]);
+            [MessagingConstants.StockReservedRoutingKey, MessagingConstants.StockRejectedRoutingKey],
+            retryDelayMs);
     }
 
-    private static void DeclareQueueWithDlq(
+    private static void DeclareQueueTopology(
         IModel channel,
         string queueName,
+        string retryQueueName,
         string dlqName,
-        string[] routingKeys)
+        string[] routingKeys,
+        int retryDelayMs)
     {
         channel.QueueDeclare(
             queue: dlqName,
@@ -74,7 +99,7 @@ public sealed class BrokerConnection
             exchange: MessagingConstants.DeadLetterExchange,
             routingKey: dlqName);
 
-        var args = new Dictionary<string, object>
+        var workArgs = new Dictionary<string, object>
         {
             ["x-dead-letter-exchange"] = MessagingConstants.DeadLetterExchange,
             ["x-dead-letter-routing-key"] = dlqName
@@ -85,13 +110,32 @@ public sealed class BrokerConnection
             durable: true,
             exclusive: false,
             autoDelete: false,
-            arguments: args);
+            arguments: workArgs);
+
+        // Omit x-dead-letter-routing-key so expired messages return to orderflow.events with their original routing key.
+        var retryArgs = new Dictionary<string, object>
+        {
+            ["x-message-ttl"] = retryDelayMs,
+            ["x-dead-letter-exchange"] = MessagingConstants.EventsExchange
+        };
+
+        channel.QueueDeclare(
+            queue: retryQueueName,
+            durable: true,
+            exclusive: false,
+            autoDelete: false,
+            arguments: retryArgs);
 
         foreach (var key in routingKeys)
         {
             channel.QueueBind(
                 queue: queueName,
                 exchange: MessagingConstants.EventsExchange,
+                routingKey: key);
+
+            channel.QueueBind(
+                queue: retryQueueName,
+                exchange: MessagingConstants.RetryExchange,
                 routingKey: key);
         }
     }

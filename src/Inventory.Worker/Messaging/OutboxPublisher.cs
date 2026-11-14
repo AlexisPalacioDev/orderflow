@@ -119,7 +119,7 @@ public sealed class OutboxPublisher(
 
         _connection = broker.CreateConnection();
         _channel = _connection.CreateModel();
-        BrokerConnection.DeclareTopology(_channel);
+        broker.DeclareTopology(_channel);
         _channel.ConfirmSelect();
     }
 

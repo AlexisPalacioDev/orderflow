@@ -12,7 +12,8 @@ public sealed class OrderCreatedConsumer(
     BrokerConnection broker,
     ILogger<OrderCreatedConsumer> logger) : BackgroundService
 {
-    private const string RetryHeader = "x-retry-count";
+    private sealed class PoisonMessageException(string message, Exception? inner = null)
+        : Exception(message, inner);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -22,22 +23,26 @@ public sealed class OrderCreatedConsumer(
         {
             IConnection? connection = null;
             IModel? channel = null;
+            IModel? retryChannel = null;
 
             try
             {
                 connection = broker.CreateConnection();
                 channel = connection.CreateModel();
-                BrokerConnection.DeclareTopology(channel);
+                retryChannel = connection.CreateModel();
+                broker.DeclareTopology(channel);
+                retryChannel.ConfirmSelect();
                 channel.BasicQos(0, MessagingConstants.ConsumerPrefetch, global: false);
 
                 var closedTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 connection.ConnectionShutdown += (_, _) => closedTcs.TrySetResult();
                 channel.ModelShutdown += (_, _) => closedTcs.TrySetResult();
+                retryChannel.ModelShutdown += (_, _) => closedTcs.TrySetResult();
 
                 var consumer = new AsyncEventingBasicConsumer(channel);
                 consumer.Received += async (_, ea) =>
                 {
-                    await HandleDeliveryAsync(channel, ea, stoppingToken);
+                    await HandleDeliveryAsync(channel, retryChannel, ea, stoppingToken);
                 };
 
                 channel.BasicConsume(
@@ -61,6 +66,7 @@ public sealed class OrderCreatedConsumer(
             }
             finally
             {
+                try { retryChannel?.Dispose(); } catch { /* ignore cleanup errors */ }
                 try { channel?.Dispose(); } catch { /* ignore cleanup errors */ }
                 try { connection?.Dispose(); } catch { /* ignore cleanup errors */ }
             }
@@ -81,15 +87,38 @@ public sealed class OrderCreatedConsumer(
         }
     }
 
-    private async Task HandleDeliveryAsync(IModel channel, BasicDeliverEventArgs ea, CancellationToken ct)
+    private async Task HandleDeliveryAsync(
+        IModel channel,
+        IModel retryChannel,
+        BasicDeliverEventArgs ea,
+        CancellationToken ct)
     {
+        var routingKey = ea.RoutingKey == MessagingConstants.InventoryOrderCreatedQueue
+            ? MessagingConstants.OrderCreatedRoutingKey
+            : ea.RoutingKey;
+        var messageType = ea.BasicProperties?.Type;
+        var messageId = ea.BasicProperties?.MessageId;
         var payload = Encoding.UTF8.GetString(ea.Body.ToArray());
+
+        OrderCreated evt;
+        try
+        {
+            evt = ParseEvent(routingKey, messageType, payload);
+        }
+        catch (PoisonMessageException ex)
+        {
+            logger.LogError(
+                ex,
+                "Poison OrderCreated message (RoutingKey={RoutingKey}, Type={MessageType}, MessageId={MessageId}); sending directly to DLQ",
+                ea.RoutingKey,
+                messageType,
+                messageId);
+            channel.BasicNack(ea.DeliveryTag, multiple: false, requeue: false);
+            return;
+        }
 
         try
         {
-            var evt = JsonSerializer.Deserialize<OrderCreated>(payload, EventSerialization.Options)
-                ?? throw new InvalidOperationException("Invalid OrderCreated payload.");
-
             using var scope = scopeFactory.CreateScope();
             var handler = scope.ServiceProvider.GetRequiredService<ReserveStockHandler>();
 
@@ -98,56 +127,117 @@ public sealed class OrderCreatedConsumer(
         }
         catch (Exception ex)
         {
-            var attempts = GetAttemptCount(ea.BasicProperties);
-            if (attempts >= MessagingConstants.MaxDeliveryAttempts)
+            var attempt = RetryDecision.ReadAttempt(ea.BasicProperties?.Headers, MessagingConstants.AttemptHeader);
+            if (RetryDecision.For(attempt, broker.MaxDeliveryAttempts) == RetryAction.DeadLetter)
             {
                 logger.LogError(
                     ex,
-                    "OrderCreated message failed after {Attempts} attempts; sending to DLQ",
-                    attempts);
+                    "OrderCreated message for order {OrderId} (event {EventId}) failed after {Attempt}/{MaxAttempts} attempts; sending to DLQ",
+                    evt.OrderId,
+                    evt.EventId,
+                    attempt,
+                    broker.MaxDeliveryAttempts);
                 channel.BasicNack(ea.DeliveryTag, multiple: false, requeue: false);
+                return;
             }
-            else
+
+            var nextAttempt = attempt + 1;
+            logger.LogWarning(
+                ex,
+                "OrderCreated message for order {OrderId} (event {EventId}) failed on attempt {Attempt}/{MaxAttempts}; scheduling delayed retry ({DelayMs}ms, next x-attempt={NextAttempt})",
+                evt.OrderId,
+                evt.EventId,
+                attempt,
+                broker.MaxDeliveryAttempts,
+                broker.RetryDelayMs,
+                nextAttempt);
+
+            try
+            {
+                PublishToRetry(retryChannel, ea, routingKey, nextAttempt);
+                channel.BasicAck(ea.DeliveryTag, multiple: false);
+            }
+            catch (Exception retryEx)
             {
                 logger.LogWarning(
-                    ex,
-                    "OrderCreated message failed on attempt {Attempts}; requeuing for retry",
-                    attempts);
-
-                var props = channel.CreateBasicProperties();
-                props.Persistent = true;
-                props.ContentType = "application/json";
-                props.Headers = new Dictionary<string, object>
-                {
-                    [RetryHeader] = attempts
-                };
-
-                channel.BasicPublish(
-                    exchange: string.Empty,
-                    routingKey: MessagingConstants.InventoryOrderCreatedQueue,
-                    mandatory: false,
-                    basicProperties: props,
-                    body: ea.Body);
-                channel.BasicAck(ea.DeliveryTag, multiple: false);
+                    retryEx,
+                    "Failed to publish retry for order {OrderId} (event {EventId}); leaving message unacknowledged for redelivery",
+                    evt.OrderId,
+                    evt.EventId);
             }
         }
     }
 
-    private static int GetAttemptCount(IBasicProperties? properties)
+    private static void PublishToRetry(
+        IModel retryChannel,
+        BasicDeliverEventArgs ea,
+        string routingKey,
+        int nextAttempt)
     {
-        if (properties?.Headers is null || !properties.Headers.TryGetValue(RetryHeader, out var raw))
+        var props = retryChannel.CreateBasicProperties();
+        props.Persistent = true;
+        props.ContentType = string.IsNullOrWhiteSpace(ea.BasicProperties?.ContentType)
+            ? "application/json"
+            : ea.BasicProperties.ContentType;
+
+        if (!string.IsNullOrWhiteSpace(ea.BasicProperties?.MessageId))
         {
-            return 1;
+            props.MessageId = ea.BasicProperties.MessageId;
         }
 
-        var previousRetries = raw switch
+        if (!string.IsNullOrWhiteSpace(ea.BasicProperties?.Type))
         {
-            int i => i,
-            long l => (int)l,
-            byte[] bytes when int.TryParse(Encoding.UTF8.GetString(bytes), out var parsed) => parsed,
-            _ => 0
-        };
+            props.Type = ea.BasicProperties.Type;
+        }
 
-        return previousRetries + 1;
+        if (!string.IsNullOrWhiteSpace(ea.BasicProperties?.CorrelationId))
+        {
+            props.CorrelationId = ea.BasicProperties.CorrelationId;
+        }
+
+        var headers = ea.BasicProperties?.Headers is not null
+            ? new Dictionary<string, object>(ea.BasicProperties.Headers)
+            : new Dictionary<string, object>();
+        headers[MessagingConstants.AttemptHeader] = nextAttempt;
+        props.Headers = headers;
+
+        retryChannel.BasicPublish(
+            exchange: MessagingConstants.RetryExchange,
+            routingKey: routingKey,
+            mandatory: false,
+            basicProperties: props,
+            body: ea.Body);
+
+        retryChannel.WaitForConfirmsOrDie(TimeSpan.FromSeconds(5));
+    }
+
+    private static OrderCreated ParseEvent(string routingKey, string? messageType, string payload)
+    {
+        if (routingKey != MessagingConstants.OrderCreatedRoutingKey)
+        {
+            throw new PoisonMessageException($"Unexpected routing key '{routingKey}'.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(messageType) && messageType != nameof(OrderCreated))
+        {
+            throw new PoisonMessageException($"Unexpected message type '{messageType}'.");
+        }
+
+        OrderCreated? evt;
+        try
+        {
+            evt = JsonSerializer.Deserialize<OrderCreated>(payload, EventSerialization.Options);
+        }
+        catch (JsonException ex)
+        {
+            throw new PoisonMessageException("Malformed JSON for OrderCreated.", ex);
+        }
+
+        if (evt is null || evt.EventId == Guid.Empty || evt.OrderId == Guid.Empty || string.IsNullOrWhiteSpace(evt.Sku))
+        {
+            throw new PoisonMessageException("Invalid OrderCreated payload.");
+        }
+
+        return evt;
     }
 }
