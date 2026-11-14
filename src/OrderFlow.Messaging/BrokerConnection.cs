@@ -45,7 +45,7 @@ public sealed class BrokerConnection
 
     public void DeclareTopology(IModel channel) => DeclareTopology(channel, RetryDelayMs);
 
-    public static void DeclareTopology(IModel channel, int retryDelayMs = MessagingConstants.DefaultRetryDelayMs)
+    public static void DeclareTopology(IModel channel, int retryDelayMs)
     {
         channel.ExchangeDeclare(
             exchange: MessagingConstants.EventsExchange,

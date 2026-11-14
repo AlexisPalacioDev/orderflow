@@ -94,9 +94,7 @@ public sealed class OrderCreatedConsumer(
         BasicDeliverEventArgs ea,
         CancellationToken ct)
     {
-        var routingKey = ea.RoutingKey == MessagingConstants.InventoryOrderCreatedQueue
-            ? MessagingConstants.OrderCreatedRoutingKey
-            : ea.RoutingKey;
+        var routingKey = ea.RoutingKey;
         var messageType = ea.BasicProperties?.Type;
         var messageId = ea.BasicProperties?.MessageId;
         var payload = Encoding.UTF8.GetString(ea.Body.ToArray());

@@ -79,11 +79,10 @@ public static class OrderEndpoints
             CreatedAt = now
         };
 
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        // A single SaveChangesAsync already wraps all pending changes in one implicit database transaction.
         db.Orders.Add(order);
         db.OutboxMessages.Add(outbox);
         await db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
 
         logger.LogInformation(
             "Created order {OrderId} (Pending) with outbox event {EventId} for SKU {Sku} x {Cantidad}",
