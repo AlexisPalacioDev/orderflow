@@ -1,5 +1,9 @@
 using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using OrderFlow.Messaging;
 using Orders.Api.Data;
 using Orders.Api.Endpoints;
@@ -16,16 +20,62 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
 });
 
+builder.Services.AddProblemDetails();
+builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
+
 builder.Services.AddDbContext<OrdersDbContext>(options => options.UseNpgsql(connectionString));
 builder.Services.AddScoped<IOutboxDbContext>(sp => sp.GetRequiredService<OrdersDbContext>());
 builder.Services.AddSingleton<BrokerConnection>();
 builder.Services.AddHostedService<OutboxPublisher>();
 builder.Services.AddHostedService<StockResultConsumer>();
+builder.Services.AddHealthChecks()
+    .AddCheck<OrdersDbHealthCheck>("orders-db", tags: ["ready"]);
 
 var app = builder.Build();
 
+app.UseExceptionHandler(exceptionApp =>
+{
+    exceptionApp.Run(async context =>
+    {
+        var exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
+        var problemDetailsService = context.RequestServices.GetRequiredService<IProblemDetailsService>();
+
+        if (exception is BadHttpRequestException)
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await problemDetailsService.WriteAsync(new ProblemDetailsContext
+            {
+                HttpContext = context,
+                Exception = exception,
+                ProblemDetails = new ProblemDetails
+                {
+                    Status = StatusCodes.Status400BadRequest,
+                    Title = "Solicitud inválida",
+                    Detail = "El cuerpo de la solicitud no es un JSON válido."
+                }
+            });
+            return;
+        }
+
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        await problemDetailsService.WriteAsync(new ProblemDetailsContext
+        {
+            HttpContext = context,
+            Exception = exception,
+            ProblemDetails = new ProblemDetails
+            {
+                Status = StatusCodes.Status500InternalServerError,
+                Title = "Error interno del servidor",
+                Detail = "Ocurrió un error inesperado al procesar la solicitud."
+            }
+        });
+    });
+});
+
 await InitializeDatabaseAsync(app.Services, app.Configuration, app.Logger);
 
+app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
+app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = check => check.Tags.Contains("ready") });
 app.MapOrderEndpoints();
 app.Run();
 
@@ -53,5 +103,17 @@ static async Task InitializeDatabaseAsync(IServiceProvider services, IConfigurat
             await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
             delaySeconds = Math.Min(delaySeconds * 2, 10);
         }
+    }
+}
+
+sealed class OrdersDbHealthCheck(OrdersDbContext db) : IHealthCheck
+{
+    public async Task<HealthCheckResult> CheckHealthAsync(
+        HealthCheckContext context,
+        CancellationToken cancellationToken = default)
+    {
+        return await db.Database.CanConnectAsync(cancellationToken)
+            ? HealthCheckResult.Healthy()
+            : HealthCheckResult.Unhealthy("Cannot connect to Orders database.");
     }
 }

@@ -17,8 +17,6 @@ public static class OrderEndpoints
         app.MapGet("/orders", HandleListOrdersAsync);
         app.MapGet("/orders/{id:guid}", HandleGetOrderAsync);
         app.MapGet("/products", HandleListProductsAsync);
-        app.MapGet("/health/live", () => Results.Ok(new { status = "alive" }));
-        app.MapGet("/health/ready", HandleReadyAsync);
     }
 
     private static async Task<IResult> HandleCreateOrderAsync(
@@ -124,13 +122,5 @@ public static class OrderEndpoints
             .ToListAsync(ct);
 
         return Results.Ok(products);
-    }
-
-    private static async Task<IResult> HandleReadyAsync(OrdersDbContext db, CancellationToken ct)
-    {
-        var canConnect = await db.Database.CanConnectAsync(ct);
-        return canConnect
-            ? Results.Ok(new { status = "ready" })
-            : Results.Json(new { status = "unavailable" }, statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 }
