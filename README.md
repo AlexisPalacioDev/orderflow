@@ -187,4 +187,4 @@ En `k8s/` se incluyen los manifiestos base para `orders-api` e `inventory-worker
 
 ## 9. Uso de IA
 
-Se utilizó asistencia de IA para acelerar la redacción inicial de código repetitivo, pruebas y documentación. Toda la arquitectura, el contrato de eventos, la lógica de transacciones/reintentos y los cambios finales fueron revisados y validados directamente ejecutando las pruebas y el entorno completo en Docker.
+Esta solución se desarrolló con asistencia de IA, como permite el enunciado: se usó para generar código, pruebas y documentación, y para auditar el resultado. La arquitectura, el contrato de eventos y la lógica de transacciones y reintentos se validaron ejecutando las pruebas y el entorno completo en Docker, incluidos los escenarios de fallo descritos en este documento.
